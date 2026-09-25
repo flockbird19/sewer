@@ -4,6 +4,7 @@ from pipeline.smoothing import MovingMedianFilter
 from pipeline.trend import TrendDetector
 from pipeline.hysteresis import StatusConfirmation
 from pipeline.heater_cycle import MQ7HeaterCycle
+from pipeline.eta import estimate_eta
 import config
 
 
@@ -224,6 +225,16 @@ class PipelineCoordinator:
         if status == "Safe":
             self._peak_pct_since_safe = 0.0
 
+        # ETA only once a rise is already CONFIRMED (Early Warning or
+        # Imminent) - never from the raw/unconfirmed trend["rising"] signal.
+        # This is the direct fix for the flapping bug the original
+        # curve-fit ETA feature caused (see progress.md and
+        # docs/superpowers/specs/2026-09-25-eta-prediction-design.md).
+        eta_minutes, eta_label = None, None
+        if status in ("Early Warning", "Imminent"):
+            eta = estimate_eta(pct, trend["rate_pct_per_min"])
+            eta_minutes, eta_label = eta["eta_minutes"], eta["eta_label"]
+
         if status == "Safe":
             reason = f"{self.gas_name} stable at {pct:.1f}% of its critical level."
         else:
@@ -231,11 +242,16 @@ class PipelineCoordinator:
                 f"{self.gas_name} confirmed rising at {trend['rate_pct_per_min']:.1f}% "
                 f"of critical level/min, currently {pct:.1f}% of critical level."
             )
+            if eta_label is not None:
+                reason += f" ETA to critical: {eta_label}."
 
-        return self._result(raw_value, smoothed, pct, status, trend["rate_pct_per_min"], trend["cusum"], reason)
+        return self._result(
+            raw_value, smoothed, pct, status, trend["rate_pct_per_min"], trend["cusum"], reason,
+            eta_minutes=eta_minutes, eta_label=eta_label,
+        )
 
     @staticmethod
-    def _result(raw_value, smoothed, pct, status, rate, cusum, reason) -> dict:
+    def _result(raw_value, smoothed, pct, status, rate, cusum, reason, eta_minutes=None, eta_label=None) -> dict:
         return {
             "raw_value": raw_value,
             "smoothed_value": smoothed,
@@ -244,4 +260,6 @@ class PipelineCoordinator:
             "rate_pct_per_min": rate,
             "cusum": cusum,
             "reason": reason,
+            "eta_minutes": eta_minutes,
+            "eta_label": eta_label,
         }

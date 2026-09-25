@@ -111,6 +111,59 @@ def test_eta_label_above_cap_shows_floor():
     print("PASS: test_eta_label_above_cap_shows_floor")
 
 
+def test_eta_absent_before_confirmed_rising():
+    """Flat, non-rising data must never carry an ETA - directly mirrors
+    test_stays_safe_on_flat_data, but checking the new fields."""
+    coordinator = PipelineCoordinator(threshold=100.0, gas_name="Test")
+    for t in range(100):
+        result = coordinator.process_reading(10.0, float(t))
+        assert result["eta_minutes"] is None, f"t={t}: expected no ETA on flat data, got {result['eta_minutes']}"
+        assert result["eta_label"] is None
+    print("PASS: test_eta_absent_before_confirmed_rising")
+
+
+def test_eta_appears_once_status_confirmed_rising():
+    """Once a sustained rise is confirmed (Early Warning or worse), the
+    result must carry a non-None ETA - this is the actual feature working
+    end-to-end through the coordinator, not just the pure function."""
+    coordinator = PipelineCoordinator(threshold=100.0, gas_name="Test")
+    result = None
+    for t in range(60):
+        val = 10.0 + t * 2.0  # same steady climb used in test_sustained_rise_eventually_upgrades
+        result = coordinator.process_reading(val, float(t))
+        if result["status"] != "Safe":
+            break
+    assert result["status"] != "Safe", "a sustained rise never triggered any warning"
+    if result["status"] == "Critical":
+        assert result["eta_minutes"] is None, "Critical should never carry an ETA - it's already there"
+    else:
+        assert result["eta_minutes"] is not None, (
+            f"expected an ETA once status={result['status']}, got eta_minutes=None"
+        )
+        assert result["eta_label"] is not None
+        assert "ETA to critical" in result["reason"], f"expected ETA mentioned in reason, got: {result['reason']}"
+    print(f"PASS: test_eta_appears_once_status_confirmed_rising (status={result['status']}, eta={result['eta_label']})")
+
+
+def test_eta_absent_on_critical():
+    """Critical always fires off the instant safety floor, before the
+    trend/ETA logic ever runs - it must never carry an ETA (the gas is
+    already there, an 'arrival time' is meaningless)."""
+    coordinator = PipelineCoordinator(threshold=100.0, gas_name="Test")
+    for t in range(10):
+        coordinator.process_reading(10.0, float(t))  # warm up
+    result = None
+    for t in range(10, 40):
+        val = min(10.0 + (t - 9) * 20.0, 150.0)
+        result = coordinator.process_reading(val, float(t))
+        if result["status"] == "Critical":
+            break
+    assert result["status"] == "Critical", f"expected Critical, got {result['status']}"
+    assert result["eta_minutes"] is None, f"Critical must not carry an ETA, got {result['eta_minutes']}"
+    assert result["eta_label"] is None
+    print("PASS: test_eta_absent_on_critical")
+
+
 if __name__ == "__main__":
     test_stays_safe_on_flat_data()
     test_critical_fires_without_confirmation_delay()
@@ -120,4 +173,7 @@ if __name__ == "__main__":
     test_eta_none_on_flat_or_declining_rate()
     test_eta_label_below_cap_shows_specific_minutes()
     test_eta_label_above_cap_shows_floor()
+    test_eta_absent_before_confirmed_rising()
+    test_eta_appears_once_status_confirmed_rising()
+    test_eta_absent_on_critical()
     print("\nAll pipeline tests passed.")
