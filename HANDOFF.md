@@ -47,6 +47,16 @@ published sewer-IoT literature) and wrote fully-cited findings to
 several of the bug fixes below (most importantly: MQ-7 doesn't sample continuously —
 it needs a mandatory heater duty cycle).
 
+**ETA prediction added this session (new research novelty):** a rate-based
+linear-extrapolation ETA (`src/pipeline/eta.py`), gated on confirmed-rising
+status so it can't repeat the flapping bug that got the original
+curve-fit-based ETA removed earlier this same session. See `progress.md` →
+"ETA prediction" for the real measured accuracy numbers (honestly reported —
+41-48% mean relative error on the first-available slow_leak prediction, and
+a 190-1000s over-prediction on fast_leak, both explained not hidden), and
+`docs/superpowers/specs/2026-09-25-eta-prediction-design.md` for the full
+design rationale.
+
 **11 real bugs were found and fixed this session, each via actual large-scale randomized
 testing** (not reasoning alone) — full list with root causes in `progress.md` → "Bugs
 found and fixed this session". Skim that list before touching the trend/coordinator logic
@@ -134,16 +144,25 @@ order of importance:
    (1.0/1.0) — genuinely blocked on either digitizing the datasheets' own Rs/R0-vs-ppm
    graphs or real bench calibration once hardware arrives. Don't invent plausible-looking
    numbers without one of those two.
-6. **Cheap, not-yet-done cleanup** (low priority, explicitly deferred each time so far):
+6. **ETA accuracy has only been validated against this project's own synthetic generator,
+   not real sensor data or real leak physics** — same caveat as the rest of the pipeline.
+   Also, the measured first-available-ETA error (41–48% relative, see `progress.md` →
+   "ETA prediction") is higher than hoped, and appears to come mostly from EWMA
+   convergence lag right at the moment a rise first gets confirmed — worth checking
+   whether a prediction taken a few ticks later (once the EWMAs settle) is meaningfully
+   more accurate, before presenting a single accuracy number in the report. The two-sided
+   range method (linear floor + robust exponential ceiling) considered during
+   brainstorming and deferred is a reasonable next iteration if the fast_leak
+   under-estimation-of-urgency turns out to matter in practice.
+7. **Cheap, not-yet-done cleanup** (low priority, explicitly deferred each time so far):
    `README.md` and `requirements.txt` are still tracked-but-empty; `notebooks/explore.ipynb`
    is still a tracked, 0-byte, invalid file; the packaged console entry point
    (`sewer-gas-prediction` command) still prints a placeholder instead of running the real
    pipeline.
-7. **Nothing is committed yet.** Once the user reviews the current state, it needs a
-   commit (and the user should decide the message/scope — this session made 11 distinct
-   bug fixes plus a full architecture rewrite, so consider whether that's one commit or
-   several logical ones).
-8. **Hardware work remains entirely out of scope** until funding/hardware arrives — don't
+8. **Committing is now current** — last session's full pipeline rebuild and this
+   session's ETA prediction feature are both committed as separate, honestly-scoped
+   commits (see `git log`). Nothing outstanding here for now.
+9. **Hardware work remains entirely out of scope** until funding/hardware arrives — don't
    start on ESP32 firmware, LoRa, the gateway, or the dashboard without the user
    explicitly reopening that scope.
 
