@@ -5,6 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from pipeline.coordinator import PipelineCoordinator
+from pipeline.eta import estimate_eta
 
 
 def test_stays_safe_on_flat_data():
@@ -81,10 +82,42 @@ def test_sustained_rise_eventually_upgrades():
     print("PASS: test_sustained_rise_eventually_upgrades")
 
 
+def test_eta_none_on_flat_or_declining_rate():
+    """A flat or falling rate must never produce an ETA - no negative
+    numbers, no divide-by-zero, no infinite countdown."""
+    assert estimate_eta(pct_of_threshold=30.0, rate_pct_per_min=0.0) == {"eta_minutes": None, "eta_label": None}
+    assert estimate_eta(pct_of_threshold=30.0, rate_pct_per_min=-2.5) == {"eta_minutes": None, "eta_label": None}
+    print("PASS: test_eta_none_on_flat_or_declining_rate")
+
+
+def test_eta_label_below_cap_shows_specific_minutes():
+    """A rate that reaches threshold well within the cap window shows a
+    specific '~N min' estimate, not a floored one."""
+    # 50% remaining, climbing at 10%/min -> exactly 5 minutes, well under the 45-min cap.
+    result = estimate_eta(pct_of_threshold=50.0, rate_pct_per_min=10.0)
+    assert result["eta_minutes"] == 5.0, f"expected 5.0 minutes, got {result['eta_minutes']}"
+    assert result["eta_label"] == "~5 min", f"expected '~5 min', got {result['eta_label']}"
+    print("PASS: test_eta_label_below_cap_shows_specific_minutes")
+
+
+def test_eta_label_above_cap_shows_floor():
+    """A rate slow enough that the naive ETA would exceed the 45-minute
+    cap must report a floor label instead of a specific, falsely-precise
+    number that far out."""
+    # 90% remaining, climbing at only 1%/min -> 90 minutes, well over the 45-min cap.
+    result = estimate_eta(pct_of_threshold=10.0, rate_pct_per_min=1.0)
+    assert result["eta_minutes"] == 90.0, f"expected raw eta_minutes=90.0 (unfloored), got {result['eta_minutes']}"
+    assert result["eta_label"] == ">45 min", f"expected '>45 min', got {result['eta_label']}"
+    print("PASS: test_eta_label_above_cap_shows_floor")
+
+
 if __name__ == "__main__":
     test_stays_safe_on_flat_data()
     test_critical_fires_without_confirmation_delay()
     test_persistent_jump_is_eventually_trusted()
     test_single_spike_does_not_upgrade_status()
     test_sustained_rise_eventually_upgrades()
+    test_eta_none_on_flat_or_declining_rate()
+    test_eta_label_below_cap_shows_specific_minutes()
+    test_eta_label_above_cap_shows_floor()
     print("\nAll pipeline tests passed.")

@@ -139,6 +139,17 @@ CONFIRM_TICKS_UP = 3     # consecutive agreeing ticks needed to raise severity
 CONFIRM_TICKS_DOWN = 10   # consecutive agreeing ticks needed to lower severity
 MAX_LATCH_TICKS = 60     # force a downgrade after this many ticks stuck, even without full confirmation
 
+# --- ETA prediction ---
+# A linear extrapolation of the CURRENT smoothed rate-of-rise (see
+# pipeline/eta.py) - deliberately not curve-fitting, to avoid the exact bug
+# class that got the original curve-fit-based ETA feature removed this
+# session (see progress.md). Only computed once a rise is already
+# confirmed (status Early Warning or Imminent), never from raw/unconfirmed
+# trend signals. Above this many minutes, report a floor ("> N min")
+# instead of a specific number - precision this far out isn't meaningful
+# given the method. See docs/superpowers/specs/2026-09-25-eta-prediction-design.md.
+ETA_CAP_MINUTES = 45.0
+
 # --- Multi-gas fusion ---
 FUSION_MIN_GASES = 2  # this many gases confirmed-rising at once = treat it one tier worse
 
