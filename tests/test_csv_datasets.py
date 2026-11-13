@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from pipeline.coordinator import PipelineCoordinator
+from config import GAS_CONFIGS
 
 def run_validation_on_array(name: str, data_array: np.ndarray, threshold: float):
     print(f"\n{'='*65}")
@@ -42,8 +43,9 @@ def run_validation_on_array(name: str, data_array: np.ndarray, threshold: float)
 def test_synthetic_datasets():
     data_dir = Path(__file__).parent.parent / "data" / "synthetic"
 
-    # H2S Threshold based on synthetic config
-    h2s_threshold = 100.0
+    # Same alarm level the data was generated against (a hard-coded copy
+    # here went stale when the alarm levels changed).
+    h2s_threshold = GAS_CONFIGS["H2S"].critical_ppm
 
     for csv_file in sorted(data_dir.glob("*.csv")):
         df = pd.read_csv(csv_file)

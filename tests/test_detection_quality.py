@@ -169,75 +169,63 @@ def test_multi_gas_fusion_flags_simultaneous_rise():
 
 
 ETA_ACCURACY_SEEDS = 200
+ETA_CHECKPOINTS = {"first warning": 0.0, "at 50% of alarm level": 50.0}
 
 
-def test_eta_accuracy_on_slow_leak():
-    """Real, reproducible accuracy number for the ETA feature (see
-    docs/superpowers/specs/2026-09-25-eta-prediction-design.md) on the
-    genuinely-linear slow_leak scenario - the case the linear-extrapolation
-    method is expected to handle well. For each of ETA_ACCURACY_SEEDS
-    seeds, records the predicted crossing time from the FIRST tick an ETA
-    becomes available (status first reaches Early Warning), and compares
-    it to the real (noise-free) ground-truth crossing time. Follows this
-    project's own standard of validating at real scale (hundreds of
-    seeds), not eyeballing a single run."""
-    for gas, cfg in GAS_CONFIGS.items():
-        relative_errors = []
-        for seed in range(ETA_ACCURACY_SEEDS):
-            np.random.seed(seed)
-            coordinator = _coordinator_for(cfg, gas)
-            data = generate_gas_data("slow_leak", DURATION, gas)
-            true_cross = true_crossing_time("slow_leak", DURATION, gas)
-            for t, val in enumerate(data):
-                result = coordinator.process_reading(val, float(t))
-                if result["eta_minutes"] is not None:
-                    predicted_cross = t + result["eta_minutes"] * 60.0
-                    relative_errors.append(abs(predicted_cross - true_cross) / true_cross)
-                    break
-        assert relative_errors, f"{gas}/slow_leak: ETA never became available in any of {ETA_ACCURACY_SEEDS} seeds"
-        mean_rel_error = sum(relative_errors) / len(relative_errors)
-        median_rel_error = sorted(relative_errors)[len(relative_errors) // 2]
-        assert mean_rel_error < 0.5, (
-            f"{gas}/slow_leak: mean relative ETA error {mean_rel_error:.1%} across "
-            f"{ETA_ACCURACY_SEEDS} seeds exceeds the 50% sanity bound"
-        )
-        print(f"  {gas}/slow_leak: mean rel. ETA error {mean_rel_error:.1%}, median {median_rel_error:.1%} "
-              f"across {ETA_ACCURACY_SEEDS} seeds (first-available ETA vs true crossing time)")
-    print("PASS: test_eta_accuracy_on_slow_leak")
+def test_eta_range_contains_true_crossing_time():
+    """Real, reproducible numbers for the ETA range (see pipeline/eta.py).
+
+    For each gas, on a linear leak (slow_leak) and an accelerating one
+    (fast_leak), across ETA_ACCURACY_SEEDS seeds: take the range reported
+    the first time an ETA exists, and again once the level passes 50% of
+    the alarm level, and check whether the true (noise-free) crossing
+    time falls inside it. Also reports how wide the range is, because a
+    range that always contains the truth by being enormous is useless.
+
+    Caveat to carry into any report: the two scenarios are exactly the
+    two shapes the range is built from (a straight line and an
+    exponential), so this measures how well noise is handled, not how
+    well real leaks follow either shape."""
+    for scenario in ["slow_leak", "fast_leak"]:
+        for gas, cfg in GAS_CONFIGS.items():
+            stats = {name: {"inside": 0, "n": 0, "width": [], "low_error": []} for name in ETA_CHECKPOINTS}
+            for seed in range(ETA_ACCURACY_SEEDS):
+                np.random.seed(seed)
+                coordinator = _coordinator_for(cfg, gas)
+                data = generate_gas_data(scenario, DURATION, gas)
+                true_cross = true_crossing_time(scenario, DURATION, gas)
+                pending = dict(ETA_CHECKPOINTS)
+                for t, val in enumerate(data):
+                    result = coordinator.process_reading(val, float(t))
+                    if result["eta_minutes"] is None:
+                        continue
+                    for name, min_pct in list(pending.items()):
+                        if result["pct_of_threshold"] >= min_pct:
+                            del pending[name]
+                            low = t + result["eta_minutes"] * 60.0
+                            high = t + result["eta_minutes_high"] * 60.0
+                            remaining = true_cross - t
+                            slack = 0.1 * remaining  # 10% of the time actually left
+                            st = stats[name]
+                            st["n"] += 1
+                            st["inside"] += low - slack <= true_cross <= high + slack
+                            st["width"].append((high - low) / 60.0)
+                            st["low_error"].append((true_cross - low) / 60.0)
+                    if not pending:
+                        break
+            for name, st in stats.items():
+                assert st["n"] == ETA_ACCURACY_SEEDS, f"{gas}/{scenario}: no ETA at '{name}' in some seeds ({st['n']})"
+                coverage = st["inside"] / st["n"]
+                print(f"  {gas}/{scenario} {name}: truth inside the range in {coverage:.0%} of {st['n']} seeds; "
+                      f"range {np.mean(st['width']):.1f} min wide; earlier end is "
+                      f"{np.mean(st['low_error']):+.1f} min ahead of the truth on average")
+                assert coverage >= ETA_MIN_COVERAGE, (
+                    f"{gas}/{scenario} {name}: truth inside the ETA range in only {coverage:.0%} of seeds"
+                )
+    print("PASS: test_eta_range_contains_true_crossing_time")
 
 
-def test_eta_overpredicts_remaining_time_on_fast_leak():
-    """Documented, MEASURED limitation of the linear-extrapolation ETA
-    method (see design spec): on an exponentially accelerating leak like
-    fast_leak, it should systematically predict MORE time remaining than
-    is actually true (predicted crossing time later than the real one),
-    because it assumes the current rate holds instead of continuing to
-    accelerate. This turns that expected bias into a cited, reproducible
-    number for the report's limitations section, and would catch a
-    regression if the bias direction or magnitude changed unexpectedly."""
-    for gas, cfg in GAS_CONFIGS.items():
-        signed_errors = []
-        for seed in range(ETA_ACCURACY_SEEDS):
-            np.random.seed(seed)
-            coordinator = _coordinator_for(cfg, gas)
-            data = generate_gas_data("fast_leak", DURATION, gas)
-            true_cross = true_crossing_time("fast_leak", DURATION, gas)
-            for t, val in enumerate(data):
-                result = coordinator.process_reading(val, float(t))
-                if result["eta_minutes"] is not None:
-                    predicted_cross = t + result["eta_minutes"] * 60.0
-                    signed_errors.append(predicted_cross - true_cross)
-                    break
-        assert signed_errors, f"{gas}/fast_leak: ETA never became available in any of {ETA_ACCURACY_SEEDS} seeds"
-        mean_signed_error = sum(signed_errors) / len(signed_errors)
-        assert mean_signed_error > 0, (
-            f"{gas}/fast_leak: expected the linear-extrapolation ETA to OVER-predict remaining time "
-            f"(positive bias) on an accelerating leak, but measured mean signed error "
-            f"{mean_signed_error:+.1f}s across {ETA_ACCURACY_SEEDS} seeds"
-        )
-        print(f"  {gas}/fast_leak: ETA over-predicts remaining time by {mean_signed_error:+.1f}s on average "
-              f"across {ETA_ACCURACY_SEEDS} seeds (documented linear-vs-exponential limitation)")
-    print("PASS: test_eta_overpredicts_remaining_time_on_fast_leak (measured, expected bias confirmed)")
+ETA_MIN_COVERAGE = 0.9
 
 
 if __name__ == "__main__":
@@ -246,6 +234,5 @@ if __name__ == "__main__":
     test_detects_leaks_with_useful_lead_time()
     test_early_warning_precedes_critical()
     test_multi_gas_fusion_flags_simultaneous_rise()
-    test_eta_accuracy_on_slow_leak()
-    test_eta_overpredicts_remaining_time_on_fast_leak()
+    test_eta_range_contains_true_crossing_time()
     print("\nAll detection-quality tests passed.")

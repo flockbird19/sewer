@@ -1,3 +1,4 @@
+import collections
 import statistics
 from pipeline.calibration import ADCConverter
 from pipeline.smoothing import MovingMedianFilter
@@ -96,6 +97,8 @@ class PipelineCoordinator:
         self._last_smoothed = None
         self._last_pct = None
         self._peak_pct_since_safe = 0.0
+        self._real_ticks_since_hold = self.median_window  # no hold yet
+        self._eta_window = collections.deque()  # recent (timestamp, pct) of REAL readings, for the ETA fit
 
     def _is_implausible(self, ppm: float) -> bool:
         max_jump = self.max_jump_fraction * self.threshold
@@ -139,16 +142,17 @@ class PipelineCoordinator:
         return self._last_good_ppm
 
     def process_reading(self, raw_value: float, timestamp: float) -> dict:
-        if self.heater_cycle is not None and not self.heater_cycle.is_valid_reading(timestamp):
-            # Mid burn-off phase (MQ-7/CO only): no valid measurement
-            # exists right now. If we haven't warmed up at all yet, there's
+        if raw_value is None or (self.heater_cycle is not None and not self.heater_cycle.is_valid_reading(timestamp)):
+            # No valid measurement exists right now: mid burn-off phase
+            # (MQ-7/CO), or the caller passed None (lost radio packet,
+            # or hardware reporting its own heater phase). If we haven't warmed up at all yet, there's
             # nothing to hold - report Safe and wait for the first real
             # reading. Otherwise, feed the trend/confirm logic the last
             # known smoothed reading, held steady, same as any other tick.
             if self._last_smoothed is None:
                 return self._result(raw_value, 0.0, 0.0, "Safe", rate=0.0, cusum=0.0,
-                                     reason=f"{self.gas_name} heater cycling (burn-off phase).")
-            result = self._finish(raw_value, self._last_smoothed, self._last_pct, timestamp)
+                                     reason=f"{self.gas_name} has no valid reading yet.", held=True)
+            result = self._finish(raw_value, self._last_smoothed, self._last_pct, timestamp, held=True)
             self._last_result = result
             return result
 
@@ -196,17 +200,26 @@ class PipelineCoordinator:
         self._last_result = result
         return result
 
-    def _finish(self, raw_value: float, smoothed: float, pct: float, timestamp: float) -> dict:
+    def _finish(self, raw_value: float, smoothed: float, pct: float, timestamp: float, held: bool = False) -> dict:
         """Safety floor + trend + confirm, given a smoothed reading - real
         or (during MQ-7 burn-off) held steady from the last real one."""
         if smoothed >= self.threshold:
             status = self.confirm.process("Critical")
             return self._result(
                 raw_value, smoothed, pct, status, rate=0.0, cusum=0.0,
-                reason=f"{self.gas_name} at or above its critical level ({smoothed:.1f} ppm).",
+                reason=f"{self.gas_name} at or above its critical level ({smoothed:.1f} ppm).", held=held,
             )
 
-        trend = self.trend.update(pct, timestamp)
+        trend = self.trend.update(pct, timestamp, held=held)
+        # The ETA fit only sees readings the median filter has fully caught
+        # up on: for the first few real readings after a hold its window
+        # still holds pre-gap values, so its output is stale by the length
+        # of the gap (measured: this alone put the CO estimate ~40 s late).
+        self._real_ticks_since_hold = 0 if held else self._real_ticks_since_hold + 1
+        if self._real_ticks_since_hold > self.median_window // 2:
+            self._eta_window.append((timestamp, pct))
+        while self._eta_window and timestamp - self._eta_window[0][0] > config.ETA_WINDOW_SEC:
+            self._eta_window.popleft()
         self._peak_pct_since_safe = max(self._peak_pct_since_safe, pct)
 
         if trend["rising"]:
@@ -230,10 +243,10 @@ class PipelineCoordinator:
         # This is the direct fix for the flapping bug the original
         # curve-fit ETA feature caused (see progress.md and
         # docs/superpowers/specs/2026-09-25-eta-prediction-design.md).
-        eta_minutes, eta_label = None, None
+        eta = {"eta_minutes": None, "eta_minutes_high": None, "eta_label": None}
         if status in ("Early Warning", "Imminent"):
-            eta = estimate_eta(pct, trend["rate_pct_per_min"])
-            eta_minutes, eta_label = eta["eta_minutes"], eta["eta_label"]
+            eta = estimate_eta(self._eta_window)
+        eta_label = eta["eta_label"]
 
         if status == "Safe":
             reason = f"{self.gas_name} stable at {pct:.1f}% of its critical level."
@@ -247,11 +260,12 @@ class PipelineCoordinator:
 
         return self._result(
             raw_value, smoothed, pct, status, trend["rate_pct_per_min"], trend["cusum"], reason,
-            eta_minutes=eta_minutes, eta_label=eta_label,
+            held=held, **eta,
         )
 
     @staticmethod
-    def _result(raw_value, smoothed, pct, status, rate, cusum, reason, eta_minutes=None, eta_label=None) -> dict:
+    def _result(raw_value, smoothed, pct, status, rate, cusum, reason, eta_minutes=None, eta_minutes_high=None,
+                eta_label=None, held=False) -> dict:
         return {
             "raw_value": raw_value,
             "smoothed_value": smoothed,
@@ -260,6 +274,8 @@ class PipelineCoordinator:
             "rate_pct_per_min": rate,
             "cusum": cusum,
             "reason": reason,
-            "eta_minutes": eta_minutes,
+            "eta_minutes": eta_minutes,            # earlier (conservative) end of the range
+            "eta_minutes_high": eta_minutes_high,  # later end of the range
             "eta_label": eta_label,
+            "held": held,  # True = no fresh reading this tick; values are the last known ones
         }

@@ -33,20 +33,20 @@ def run_multi_gas_loop():
             # 1. Simulate reading from physical sensors (4 independent MQ sensors)
             # Normal baselines for each gas
             readings = {
-                'H2S': max(0.0, 5.0 + random.uniform(-0.5, 0.5)),
-                'CH4': max(0.0, 100.0 + random.uniform(-10, 10)),
-                'CO': max(0.0, 10.0 + random.uniform(-2, 2)),
-                'NH3': max(0.0, 2.0 + random.uniform(-0.2, 0.2))
+                'H2S': max(0.0, 0.5 + random.gauss(0, 0.1)),
+                'CH4': max(0.0, 500.0 + random.gauss(0, 50)),
+                'CO': max(0.0, 2.0 + random.gauss(0, 0.5)),
+                'NH3': max(0.0, 1.0 + random.gauss(0, 0.2))
             }
 
             # Simulate a leak on H2S starting at tick 40
             if tick >= 40:
-                leak_amount = min(0.5 * (1.1 ** (tick - 40)), 500.0)
+                leak_amount = min(0.05 * (1.05 ** (tick - 40)), 50.0)
                 readings['H2S'] += leak_amount
 
             # Simulate a completely different sudden spike on CH4 at tick 60
             if tick >= 60:
-                readings['CH4'] += 4000.0
+                readings['CH4'] += 2000.0
 
             # 2. Process ALL gases simultaneously
             result = aggregator.process_readings(readings, current_timestamp)

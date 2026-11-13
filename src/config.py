@@ -111,6 +111,20 @@ EWMA_FAST_TAU_SEC = -1.0 / math.log(1 - EWMA_FAST_ALPHA)
 EWMA_SLOW_TAU_SEC = -1.0 / math.log(1 - EWMA_SLOW_ALPHA)
 RATE_EWMA_TAU_SEC = -1.0 / math.log(1 - RATE_EWMA_ALPHA)
 
+# --- Noise-adaptive limits (see TrendDetector._update_noise) ---
+# The fixed limits below are FLOORS. Each is raised to a multiple of the
+# channel's own measured sample-to-sample noise, so a noisier sensor (or
+# a lower alarm level, which makes the same noise a bigger share of it)
+# does not false-alarm. The multiples were set from measured baseline
+# runs with tests/calibrate_noise.py, not derived on paper - re-measure
+# them against real sensor logs once hardware data exists.
+NOISE_MEMORY_SAMPLES = 50   # ~how many recent samples the noise estimate remembers
+NOISE_MIN_SAMPLES = 10      # no "rising" verdict before this many samples
+NOISE_GAP_MULTIPLE = 10.0         # fast-minus-slow average must exceed this x noise to count as elevated
+NOISE_RATE_MULTIPLE = 140.0       # rate (%/min) must exceed this x noise
+NOISE_CUSUM_SLACK_MULTIPLE = 2.5  # CUSUM ignores a gap smaller than this x noise
+NOISE_CUSUM_ALERT_MULTIPLE = 45.0 # CUSUM alert level is at least this x noise
+
 # CUSUM (cumulative sum) catches a slow, steady drift that's too gentle for
 # the rate-of-rise check to notice tick-to-tick, but adds up over time.
 CUSUM_SLACK_PCT = 1.0    # ignore drift smaller than this (in % of critical threshold)
@@ -149,6 +163,21 @@ MAX_LATCH_TICKS = 60     # force a downgrade after this many ticks stuck, even w
 # instead of a specific number - precision this far out isn't meaningful
 # given the method. See docs/superpowers/specs/2026-09-25-eta-prediction-design.md.
 ETA_CAP_MINUTES = 45.0
+ETA_WINDOW_SEC = 120.0   # how far back the ETA fit looks
+ETA_MIN_SAMPLES = 10     # fewer real readings than this in the window -> no ETA
+ETA_MIN_SPAN_SEC = 10.0  # the window must cover at least this long
+ETA_UNCERTAINTY_MULTIPLE = 3.0  # how many standard errors each end of the range is widened by
+
+# --- Sewage level (JSN-SR04T ultrasonic, see pipeline/level.py) ---
+# Fill is a percent of the way from "empty" to the overflow line, both
+# set per tank when the box is installed.
+LEVEL_WARNING_PCT = 70.0
+LEVEL_IMMINENT_PCT = 85.0
+LEVEL_CRITICAL_PCT = 95.0
+# Datasheet range of the JSN-SR04T. Closer than the minimum it cannot
+# measure at all (blind zone) - verify both on the actual unit.
+LEVEL_SENSOR_MIN_CM = 25.0
+LEVEL_SENSOR_MAX_CM = 450.0
 
 # --- Multi-gas fusion ---
 FUSION_MIN_GASES = 2  # this many gases confirmed-rising at once = treat it one tier worse
@@ -175,8 +204,8 @@ MQ7_HEATER_LOW_SEC = 90.0    # 1.5V phase - the only window where the resistance
 # Explosive Limit, the recognized alarm point for methane since it's an
 # asphyxiant/explosion risk rather than a toxicity one.
 GAS_CONFIGS = {
-    "H2S": ThresholdConfig(gas_name="Hydrogen Sulfide", critical_ppm=100.0, a_calibration=1.0, b_calibration=1.0, max_ppm=5000.0),
-    "CH4": ThresholdConfig(gas_name="Methane", critical_ppm=50000.0, a_calibration=1.0, b_calibration=1.0, max_ppm=100000.0),
-    "CO":  ThresholdConfig(gas_name="Carbon Monoxide", critical_ppm=1200.0, a_calibration=1.0, b_calibration=1.0, max_ppm=10000.0),
-    "NH3": ThresholdConfig(gas_name="Ammonia", critical_ppm=300.0, a_calibration=1.0, b_calibration=1.0, max_ppm=5000.0)
+    "H2S": ThresholdConfig(gas_name="Hydrogen Sulfide", critical_ppm=10.0, a_calibration=1.0, b_calibration=1.0, max_ppm=500.0),
+    "CH4": ThresholdConfig(gas_name="Methane", critical_ppm=5000.0, a_calibration=1.0, b_calibration=1.0, max_ppm=100000.0),
+    "CO":  ThresholdConfig(gas_name="Carbon Monoxide", critical_ppm=35.0, a_calibration=1.0, b_calibration=1.0, max_ppm=2000.0),
+    "NH3": ThresholdConfig(gas_name="Ammonia", critical_ppm=25.0, a_calibration=1.0, b_calibration=1.0, max_ppm=500.0)
 }

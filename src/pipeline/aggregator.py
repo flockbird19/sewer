@@ -23,7 +23,12 @@ class MultiGasAggregator:
     response says which gases triggered it.
     """
 
-    def __init__(self, configs: Dict[str, ThresholdConfig]):
+    def __init__(self, configs: Dict[str, ThresholdConfig], level_monitor=None):
+        # level_monitor: an optional pipeline.level.LevelMonitor for the
+        # tank this box sits in. Level is reported alongside the gases and
+        # never changes the gas master status - overflow and toxic air are
+        # different hazards - but both feed the single site_status.
+        self.level_monitor = level_monitor
         self.coordinators = {
             gas: PipelineCoordinator(
                 threshold=cfg.critical_ppm,
@@ -38,10 +43,15 @@ class MultiGasAggregator:
             for gas, cfg in configs.items()
         }
 
-    def process_readings(self, readings: Dict[str, float], timestamp: float) -> dict:
+    def process_readings(self, readings: Dict[str, float], timestamp: float, level_cm: float = None) -> dict:
         """
         readings format: {'H2S': 4.5, 'CH4': 1000.0, ...}
+        Leave a gas out entirely if its sensor is not installed. Pass
+        None for a gas whose reading is missing this tick (lost packet,
+        heater burn-off reported by the hardware): its last state is held.
+        level_cm: ultrasonic distance to the sewage surface, if fitted.
         """
+        level = self.level_monitor.process_reading(level_cm, timestamp) if self.level_monitor else None
         results = {
             gas: self.coordinators[gas].process_reading(raw_val, timestamp)
             for gas, raw_val in readings.items()
@@ -50,7 +60,8 @@ class MultiGasAggregator:
 
         if not results:
             return {"master_status": "Safe", "trigger_gas": None, "multi_gas_pattern": False,
-                    "contributing_gases": [], "gas_results": {}}
+                    "contributing_gases": [], "gas_results": {}, "level": level,
+                    "site_status": level["status"] if level else "Safe"}
 
         trigger_gas = max(results, key=lambda g: SEVERITY_ORDER.index(results[g]["status"]))
         master_status = results[trigger_gas]["status"]
@@ -69,4 +80,6 @@ class MultiGasAggregator:
             "multi_gas_pattern": multi_gas_pattern,
             "contributing_gases": contributing_gases,
             "gas_results": results,
+            "level": level,
+            "site_status": max(master_status, level["status"] if level else "Safe", key=SEVERITY_ORDER.index),
         }

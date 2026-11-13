@@ -82,32 +82,47 @@ def test_sustained_rise_eventually_upgrades():
     print("PASS: test_sustained_rise_eventually_upgrades")
 
 
+def _ramp(start_pct, pct_per_min, seconds=60):
+    return [(float(t), start_pct + pct_per_min / 60.0 * t) for t in range(seconds)]
+
+
 def test_eta_none_on_flat_or_declining_rate():
-    """A flat or falling rate must never produce an ETA - no negative
-    numbers, no divide-by-zero, no infinite countdown."""
-    assert estimate_eta(pct_of_threshold=30.0, rate_pct_per_min=0.0) == {"eta_minutes": None, "eta_label": None}
-    assert estimate_eta(pct_of_threshold=30.0, rate_pct_per_min=-2.5) == {"eta_minutes": None, "eta_label": None}
+    """Flat, falling or too-short data must yield no ETA at all."""
+    for samples in (_ramp(10.0, 0.0), _ramp(50.0, -5.0), _ramp(10.0, 10.0, seconds=5)):
+        result = estimate_eta(samples)
+        assert result["eta_minutes"] is None and result["eta_label"] is None, result
     print("PASS: test_eta_none_on_flat_or_declining_rate")
 
 
-def test_eta_label_below_cap_shows_specific_minutes():
-    """A rate that reaches threshold well within the cap window shows a
-    specific '~N min' estimate, not a floored one."""
-    # 50% remaining, climbing at 10%/min -> exactly 5 minutes, well under the 45-min cap.
-    result = estimate_eta(pct_of_threshold=50.0, rate_pct_per_min=10.0)
-    assert result["eta_minutes"] == 5.0, f"expected 5.0 minutes, got {result['eta_minutes']}"
-    assert result["eta_label"] == "~5 min", f"expected '~5 min', got {result['eta_label']}"
-    print("PASS: test_eta_label_below_cap_shows_specific_minutes")
+def test_eta_range_brackets_a_linear_rise():
+    """On a noise-free linear rise the true time must sit inside the
+    reported range, and the later end must equal the linear answer."""
+    samples = _ramp(40.0, 10.0)                 # ends at 49.83%, climbing 10%/min
+    truth = (100.0 - samples[-1][1]) / 10.0     # minutes
+    result = estimate_eta(samples)
+    assert result["eta_minutes"] <= truth <= result["eta_minutes_high"] + 1e-6, (result, truth)
+    assert abs(result["eta_minutes_high"] - truth) < 0.01, (result, truth)
+    print(f"PASS: test_eta_range_brackets_a_linear_rise ({result['eta_label']}, truth {truth:.1f} min)")
+
+
+def test_eta_label_survives_an_unbounded_later_end():
+    """Noisy, barely-rising data: the slowest plausible rise is no rise at
+    all, so the later end is unbounded. Must give a label, not crash
+    (regression: round(inf) raised OverflowError)."""
+    import random
+    random.seed(4)
+    samples = [(float(t), 20.0 + 0.02 * t + random.gauss(0, 1.5)) for t in range(60)]
+    result = estimate_eta(samples)
+    if result["eta_label"] is not None:
+        assert result["eta_label"].endswith(">45 min"), result
+    print(f"PASS: test_eta_label_survives_an_unbounded_later_end ({result['eta_label']})")
 
 
 def test_eta_label_above_cap_shows_floor():
-    """A rate slow enough that the naive ETA would exceed the 45-minute
-    cap must report a floor label instead of a specific, falsely-precise
-    number that far out."""
-    # 90% remaining, climbing at only 1%/min -> 90 minutes, well over the 45-min cap.
-    result = estimate_eta(pct_of_threshold=10.0, rate_pct_per_min=1.0)
-    assert result["eta_minutes"] == 90.0, f"expected raw eta_minutes=90.0 (unfloored), got {result['eta_minutes']}"
-    assert result["eta_label"] == ">45 min", f"expected '>45 min', got {result['eta_label']}"
+    """A rise so slow that even the earlier estimate is past the cap
+    reports a floor, not a falsely precise number."""
+    result = estimate_eta(_ramp(10.0, 0.05))
+    assert result["eta_label"] == ">45 min", result
     print("PASS: test_eta_label_above_cap_shows_floor")
 
 
@@ -171,7 +186,8 @@ if __name__ == "__main__":
     test_single_spike_does_not_upgrade_status()
     test_sustained_rise_eventually_upgrades()
     test_eta_none_on_flat_or_declining_rate()
-    test_eta_label_below_cap_shows_specific_minutes()
+    test_eta_range_brackets_a_linear_rise()
+    test_eta_label_survives_an_unbounded_later_end()
     test_eta_label_above_cap_shows_floor()
     test_eta_absent_before_confirmed_rising()
     test_eta_appears_once_status_confirmed_rising()

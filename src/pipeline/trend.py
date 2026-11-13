@@ -66,13 +66,52 @@ class TrendDetector:
         self.prev_timestamp = None
         self.cusum = 0.0
 
-    def update(self, pct_of_threshold: float, timestamp: float) -> dict:
+        # Running estimate of this channel's own sample-to-sample noise
+        # (see _update_noise). None until a first difference has been seen.
+        self.noise = None
+        self._noise_samples = 0
+        self._mean_delta = 0.0
+        self._prev_value = None
+        self._prev_held = True
+
+    def _update_noise(self, value: float, held: bool) -> None:
+        """Track how much this channel jitters from one sample to the next.
+
+        The fixed limits in config.py (1% slack, 5%/min) were tuned when
+        sensor noise was ~0.1% of the alarm level. With worker-safety
+        alarm levels the same sensor noise is ~1% of the alarm level, and
+        fixed limits fire on pure noise (measured: the first baseline run
+        false-alarmed within 40 ticks). Real MQ sensors will have yet
+        another, unknown noise level. So the limits scale with the noise
+        actually observed on this channel, never dropping below the fixed
+        floors.
+
+        Uses the mean absolute deviation of first DIFFERENCES, with their
+        own running mean removed: a steady rise adds a constant to every
+        difference, which the mean removal cancels, so a real leak does
+        not inflate its own noise estimate and hide itself. Held samples
+        (MQ-7 burn-off, lost packets) carry no noise information and are
+        skipped, as is the first real sample after a hold (its difference
+        spans the whole gap)."""
+        if not held and not self._prev_held and self._prev_value is not None:
+            delta = value - self._prev_value
+            self._noise_samples += 1
+            alpha = max(1.0 / config.NOISE_MEMORY_SAMPLES, 1.0 / self._noise_samples)
+            self._mean_delta += alpha * (delta - self._mean_delta)
+            dev = abs(delta - self._mean_delta)
+            self.noise = dev if self.noise is None else self.noise + alpha * (dev - self.noise)
+        if not held:
+            self._prev_value = value
+        self._prev_held = held
+
+    def update(self, pct_of_threshold: float, timestamp: float, held: bool = False) -> dict:
         """
         pct_of_threshold: current smoothed reading, expressed as a percent
         of this gas's own critical threshold (e.g. 25.0 = a quarter of the
         way to danger). Normalizing this way lets one shared rate/CUSUM
         limit apply to every gas, no matter its absolute PPM scale.
         """
+        self._update_noise(pct_of_threshold, held)
         if self.fast_ewma is None:
             # First sample ever: seed both EWMAs at the current value so we
             # don't start by pretending the baseline was zero.
@@ -99,11 +138,16 @@ class TrendDetector:
         # than a derivative is: it compares two already-smoothed values
         # instead of differencing one of them tick to tick, so it doesn't
         # inherit the rate estimate's noise.
-        elevated_above_baseline = (self.fast_ewma - self.slow_ewma) > self.cusum_slack
+        noise = self.noise or 0.0
+        gap_limit = max(self.cusum_slack, config.NOISE_GAP_MULTIPLE * noise)
+        rate_limit = max(self.rate_limit_pct_per_min, config.NOISE_RATE_MULTIPLE * noise)
+        elevated_above_baseline = (self.fast_ewma - self.slow_ewma) > gap_limit
 
         # One-sided CUSUM: only accumulates while elevated_above_baseline is
         # true. Resets to zero (via the max(0, ...)) once it isn't.
-        deviation = (self.fast_ewma - self.slow_ewma) - self.cusum_slack
+        cusum_slack = max(self.cusum_slack, config.NOISE_CUSUM_SLACK_MULTIPLE * noise)
+        cusum_alert = max(self.cusum_alert, config.NOISE_CUSUM_ALERT_MULTIPLE * noise)
+        deviation = (self.fast_ewma - self.slow_ewma) - cusum_slack
         self.cusum = max(0.0, self.cusum + deviation)
 
         self.prev_fast_ewma = self.fast_ewma
@@ -115,6 +159,10 @@ class TrendDetector:
         # rising even during a few ticks where the (noisier) rate estimate
         # alone would have said otherwise - elevated_above_baseline catches
         # it because it isn't a derivative and doesn't inherit that noise.
-        rising = elevated_above_baseline or self.rate_ewma > self.rate_limit_pct_per_min or self.cusum > self.cusum_alert
+        rising = elevated_above_baseline or self.rate_ewma > rate_limit or self.cusum > cusum_alert
+        # Until the noise level is known, nothing can be called a rise
+        # (the instant Critical safety floor in the coordinator is unaffected).
+        if self._noise_samples < config.NOISE_MIN_SAMPLES:
+            rising = False
 
         return {"rate_pct_per_min": self.rate_ewma, "cusum": self.cusum, "rising": rising}
