@@ -13,7 +13,7 @@ def visualize_dataset(csv_path: Path, threshold: float = 100.0):
     df = pd.read_csv(csv_path)
     data_array = df['H2S_ppm'].values
     
-    coordinator = PipelineCoordinator(threshold=threshold, median_window=5, short_window=10, long_window=30)
+    coordinator = PipelineCoordinator(threshold=threshold, gas_name="H2S")
     
     smoothed_vals = []
     statuses = []
